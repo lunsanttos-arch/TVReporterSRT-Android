@@ -1,12 +1,19 @@
 package br.tvreporter.srt
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.MediaFormat
 import android.os.Bundle
 import android.util.Size
+import android.view.View
 import android.view.WindowManager
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,7 +21,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import br.tvreporter.srt.databinding.ActivityMainBinding
-import io.github.thibaultbee.streampack.core.elements.sources.audio.audiorecord.MicrophoneSourceFactory
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.extensions.defaultCameraId
 import io.github.thibaultbee.streampack.core.interfaces.releaseBlocking
 import io.github.thibaultbee.streampack.core.interfaces.setCameraId
@@ -31,6 +37,14 @@ class MainActivity : AppCompatActivity() {
 
     private var isStreaming = false
     private var isMuted = false
+    private var isPrepared = false
+    private var suppressDeviceCallbacks = false
+
+    private data class CameraChoice(val id: String, val label: String)
+    private data class MicrophoneChoice(val id: Int?, val label: String)
+
+    private var cameraChoices: List<CameraChoice> = emptyList()
+    private var microphoneChoices: List<MicrophoneChoice> = emptyList()
 
     private val bitrateOptions = listOf(2, 3, 4, 6, 8)
     private val latencyOptions = listOf(120, 200, 300, 500, 1000)
@@ -38,8 +52,8 @@ class MainActivity : AppCompatActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            val cameraGranted = result[Manifest.permission.CAMERA] == true
-            val micGranted = result[Manifest.permission.RECORD_AUDIO] == true
+            val cameraGranted = result[Manifest.permission.CAMERA] == true || hasCameraPermission()
+            val micGranted = result[Manifest.permission.RECORD_AUDIO] == true || hasMicPermission()
             if (cameraGranted && micGranted) {
                 prepareStreamer()
             } else {
@@ -58,6 +72,7 @@ class MainActivity : AppCompatActivity() {
 
         setupControls()
         restoreSettings()
+        refreshDeviceLists()
         requestPermissionsIfNeeded()
     }
 
@@ -82,6 +97,44 @@ class MainActivity : AppCompatActivity() {
         binding.latencySpinner.setSelection(latencyOptions.indexOf(200))
         binding.fpsSpinner.setSelection(fpsOptions.indexOf(30))
 
+        binding.cameraSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressDeviceCallbacks || !isPrepared || isStreaming) return
+                lifecycleScope.launch {
+                    runCatching { applySelectedCamera() }
+                        .onSuccess { saveSettings() }
+                        .onFailure { showToast("Erro ao selecionar câmera: ${it.message}") }
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        binding.microphoneSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressDeviceCallbacks || !isPrepared || isStreaming) return
+                lifecycleScope.launch {
+                    runCatching { applySelectedMicrophone() }
+                        .onSuccess { saveSettings() }
+                        .onFailure { showToast("Erro ao selecionar microfone: ${it.message}") }
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        binding.refreshDevicesButton.setOnClickListener {
+            if (!isStreaming) {
+                refreshDeviceLists()
+                if (isPrepared) {
+                    lifecycleScope.launch {
+                        runCatching { applySelectedDevices() }
+                            .onFailure { showToast("Erro ao atualizar dispositivos: ${it.message}") }
+                    }
+                }
+            }
+        }
+
         binding.liveButton.setOnClickListener {
             if (isStreaming) stopLive() else startLive()
         }
@@ -91,13 +144,93 @@ class MainActivity : AppCompatActivity() {
             streamer.audioInput.isMuted = isMuted
             binding.muteButton.text = if (isMuted) "Ativar áudio" else "Mute"
         }
+    }
 
-        binding.switchCameraButton.setOnClickListener {
-            if (!hasCameraPermission()) return@setOnClickListener
-            lifecycleScope.launch {
-                runCatching { streamer.switchBackToFront(this@MainActivity) }
-                    .onFailure { showToast("Erro ao trocar câmera: ${it.message}") }
+    private fun refreshDeviceLists() {
+        suppressDeviceCallbacks = true
+        try {
+            refreshCameraList()
+            refreshMicrophoneList()
+        } finally {
+            suppressDeviceCallbacks = false
+        }
+    }
+
+    private fun refreshCameraList() {
+        val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        cameraChoices = cameraManager.cameraIdList.map { id ->
+            val chars = cameraManager.getCameraCharacteristics(id)
+            val facing = when (chars.get(CameraCharacteristics.LENS_FACING)) {
+                CameraCharacteristics.LENS_FACING_FRONT -> "Frontal"
+                CameraCharacteristics.LENS_FACING_BACK -> "Traseira"
+                CameraCharacteristics.LENS_FACING_EXTERNAL -> "Externa"
+                else -> "Câmera"
             }
+            val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                ?.joinToString("/") { String.format("%.1f", it) }
+                ?.takeIf { it.isNotBlank() }
+            val label = buildString {
+                append(facing)
+                if (focal != null) append(" • ${focal} mm")
+                append(" • ID $id")
+            }
+            CameraChoice(id, label)
+        }
+
+        binding.cameraSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            cameraChoices.map { it.label }
+        )
+
+        val savedId = getSharedPreferences("stream", MODE_PRIVATE).getString("cameraId", null)
+        val defaultId = runCatching { defaultCameraId }.getOrNull()
+        val selectedIndex = cameraChoices.indexOfFirst { it.id == savedId }
+            .takeIf { it >= 0 }
+            ?: cameraChoices.indexOfFirst { it.id == defaultId }.takeIf { it >= 0 }
+            ?: 0
+        if (cameraChoices.isNotEmpty()) binding.cameraSpinner.setSelection(selectedIndex)
+    }
+
+    private fun refreshMicrophoneList() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+
+        microphoneChoices = listOf(MicrophoneChoice(null, "Automático do Android")) +
+            devices.map { device ->
+                MicrophoneChoice(device.id, microphoneLabel(device))
+            }
+
+        binding.microphoneSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            microphoneChoices.map { it.label }
+        )
+
+        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
+        val savedId = if (prefs.contains("microphoneId")) prefs.getInt("microphoneId", -1) else -1
+        val selectedIndex = microphoneChoices.indexOfFirst { it.id == savedId }
+            .takeIf { it >= 0 }
+            ?: 0
+        binding.microphoneSpinner.setSelection(selectedIndex)
+    }
+
+    private fun microphoneLabel(device: AudioDeviceInfo): String {
+        val type = when (device.type) {
+            AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Microfone interno"
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Headset P2"
+            AudioDeviceInfo.TYPE_USB_DEVICE -> "Áudio USB"
+            AudioDeviceInfo.TYPE_USB_HEADSET -> "Headset USB"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth"
+            AudioDeviceInfo.TYPE_BLE_HEADSET -> "Bluetooth LE"
+            AudioDeviceInfo.TYPE_TELEPHONY -> "Telefonia"
+            else -> "Entrada de áudio"
+        }
+        val product = device.productName?.toString()?.takeIf { it.isNotBlank() }
+        return if (product != null && !product.equals(type, ignoreCase = true)) {
+            "$type • $product"
+        } else {
+            type
         }
     }
 
@@ -114,24 +247,42 @@ class MainActivity : AppCompatActivity() {
     private fun prepareStreamer() {
         lifecycleScope.launch {
             try {
-                streamer.setAudioSource(MicrophoneSourceFactory())
-                streamer.setCameraId(defaultCameraId)
                 streamer.setAudioConfig(
                     AudioConfig(
                         mimeType = MediaFormat.MIMETYPE_AUDIO_AAC,
                         startBitrate = 128_000,
                         sampleRate = 48_000,
-                        channelConfig = AudioFormat.CHANNEL_IN_STEREO
+                        channelConfig = AudioFormat.CHANNEL_IN_MONO
                     )
                 )
+                applySelectedDevices()
                 applyVideoConfig()
                 binding.preview.setVideoSourceProvider(streamer)
+                isPrepared = true
                 setStatus("PRONTO")
             } catch (t: Throwable) {
                 setStatus("ERRO")
-                showToast("Erro ao preparar câmera: ${t.message}")
+                showToast("Erro ao preparar câmera/áudio: ${t.message}")
             }
         }
+    }
+
+    private suspend fun applySelectedDevices() {
+        applySelectedMicrophone()
+        applySelectedCamera()
+    }
+
+    private suspend fun applySelectedCamera() {
+        val choice = cameraChoices.getOrNull(binding.cameraSpinner.selectedItemPosition)
+            ?: throw IllegalStateException("Nenhuma câmera disponível")
+        streamer.setCameraId(choice.id)
+    }
+
+    private suspend fun applySelectedMicrophone() {
+        val choice = microphoneChoices.getOrNull(binding.microphoneSpinner.selectedItemPosition)
+            ?: MicrophoneChoice(null, "Automático do Android")
+        streamer.setAudioSource(PreferredMicrophoneSourceFactory(choice.id))
+        streamer.audioInput.isMuted = isMuted
     }
 
     private suspend fun applyVideoConfig() {
@@ -170,6 +321,7 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
+                applySelectedDevices()
                 applyVideoConfig()
                 val descriptor = SrtMediaDescriptor(
                     host = host,
@@ -186,7 +338,7 @@ class MainActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 isStreaming = false
                 setStatus("ERRO")
-                showToast("Falha SRT: ${t.message}")
+                showToast("Falha SRT/dispositivo: ${t.message}")
             } finally {
                 binding.liveButton.isEnabled = true
             }
@@ -214,6 +366,9 @@ class MainActivity : AppCompatActivity() {
         binding.portEdit.isEnabled = !locked
         binding.streamIdEdit.isEnabled = !locked
         binding.passphraseEdit.isEnabled = !locked
+        binding.cameraSpinner.isEnabled = !locked
+        binding.microphoneSpinner.isEnabled = !locked
+        binding.refreshDevicesButton.isEnabled = !locked
         binding.bitrateSpinner.isEnabled = !locked
         binding.latencySpinner.isEnabled = !locked
         binding.fpsSpinner.isEnabled = !locked
@@ -230,11 +385,18 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
     private fun saveSettings() {
+        val cameraId = cameraChoices.getOrNull(binding.cameraSpinner.selectedItemPosition)?.id
+        val microphoneId = microphoneChoices.getOrNull(binding.microphoneSpinner.selectedItemPosition)?.id
+
         getSharedPreferences("stream", MODE_PRIVATE).edit()
             .putString("host", binding.hostEdit.text.toString())
             .putString("port", binding.portEdit.text.toString())
             .putString("streamId", binding.streamIdEdit.text.toString())
             .putString("passphrase", binding.passphraseEdit.text.toString())
+            .putString("cameraId", cameraId)
+            .apply {
+                if (microphoneId == null) remove("microphoneId") else putInt("microphoneId", microphoneId)
+            }
             .putInt("bitrate", binding.bitrateSpinner.selectedItemPosition)
             .putInt("latency", binding.latencySpinner.selectedItemPosition)
             .putInt("fps", binding.fpsSpinner.selectedItemPosition)
@@ -257,13 +419,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        if (isStreaming) {
-            try {
-                streamer.releaseBlocking()
-            } catch (_: Throwable) {
-            }
-        } else {
+        try {
             streamer.releaseBlocking()
+        } catch (_: Throwable) {
         }
         super.onDestroy()
     }
