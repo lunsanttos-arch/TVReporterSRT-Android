@@ -93,6 +93,30 @@
                 android:textColorHint="#888888" />
         </LinearLayout>
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Câmera"
+            android:textColor="#BBBBBB"
+            android:textSize="12sp" />
+
+        <Spinner
+            android:id="@+id/cameraSpinner"
+            android:layout_width="match_parent"
+            android:layout_height="48dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Microfone / entrada de áudio"
+            android:textColor="#BBBBBB"
+            android:textSize="12sp" />
+
+        <Spinner
+            android:id="@+id/microphoneSpinner"
+            android:layout_width="match_parent"
+            android:layout_height="48dp" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -124,11 +148,11 @@
             android:gravity="center_vertical">
 
             <Button
-                android:id="@+id/switchCameraButton"
+                android:id="@+id/refreshDevicesButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Trocar câmera" />
+                android:text="Atualizar dispositivos" />
 
             <Button
                 android:id="@+id/muteButton"
