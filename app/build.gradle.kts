@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "br.tvreporter.srt"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "br.tvreporter.srt"
