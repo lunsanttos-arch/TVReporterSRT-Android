@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <io.github.thibaultbee.streampack.views.PreviewView
+        android:id="@+id/preview"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:enableZoomOnPinch="true"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/controlPanel"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:background="#B3000000"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="8dp"
+        android:text="PRONTO"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        app:layout_constraintTop_toTopOf="@id/preview"
+        app:layout_constraintStart_toStartOf="@id/preview" />
+
+    <LinearLayout
+        android:id="@+id/controlPanel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:background="#101010"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/hostEdit"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:hint="Host"
+                android:inputType="textUri"
+                android:text="192.168.20.53"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#888888" />
+
+            <EditText
+                android:id="@+id/portEdit"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Porta"
+                android:inputType="number"
+                android:text="6767"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#888888" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/streamIdEdit"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="StreamID (opcional)"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#888888" />
+
+            <EditText
+                android:id="@+id/passphraseEdit"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Senha SRT (opcional)"
+                android:inputType="textPassword"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#888888" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Spinner
+                android:id="@+id/bitrateSpinner"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1" />
+
+            <Spinner
+                android:id="@+id/latencySpinner"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1" />
+
+            <Spinner
+                android:id="@+id/fpsSpinner"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/switchCameraButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Trocar câmera" />
+
+            <Button
+                android:id="@+id/muteButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Mute" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/liveButton"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:text="ENTRAR AO VIVO"
+            android:textStyle="bold"
+            android:textSize="18sp" />
+
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
