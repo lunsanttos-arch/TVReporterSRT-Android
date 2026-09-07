@@ -1,0 +1,23 @@
+[versions]
+agp = "9.2.1"
+appcompat = "1.7.1"
+constraintlayout = "2.2.1"
+coreKtx = "1.19.0"
+kotlin = "2.4.10"
+lifecycleRuntimeKtx = "2.11.0"
+material = "1.14.0"
+streampack = "3.2.0"
+
+[libraries]
+appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
+constraintlayout = { module = "androidx.constraintlayout:constraintlayout", version.ref = "constraintlayout" }
+core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+material = { module = "com.google.android.material:material", version.ref = "material" }
+streampack-core = { group = "io.github.thibaultbee.streampack", name = "streampack-core", version.ref = "streampack" }
+streampack-ui = { group = "io.github.thibaultbee.streampack", name = "streampack-ui", version.ref = "streampack" }
+streampack-srt = { group = "io.github.thibaultbee.streampack", name = "streampack-srt", version.ref = "streampack" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
