@@ -7,17 +7,14 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import io.github.thibaultbee.streampack.core.elements.sources.audio.AudioSourceConfig
-import io.github.thibaultbee.streampack.core.elements.sources.audio.IAudioSource
 import io.github.thibaultbee.streampack.core.elements.sources.audio.IAudioSourceInternal
-import io.github.thibaultbee.streampack.core.utils.InternalStreamPackApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.nio.ByteBuffer
 
-@OptIn(InternalStreamPackApi::class)
 class PreferredMicrophoneSourceFactory(
     private val deviceId: Int?
-) : IAudioSource.Factory {
+) : IAudioSourceInternal.Factory {
     override suspend fun create(context: Context): IAudioSourceInternal {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val device = deviceId?.let { id ->
@@ -31,7 +28,6 @@ class PreferredMicrophoneSourceFactory(
     }
 }
 
-@OptIn(InternalStreamPackApi::class)
 class PreferredMicrophoneSource(
     val deviceId: Int?,
     private val preferredDevice: AudioDeviceInfo?
