@@ -94,8 +94,13 @@ class PreferredMicrophoneSource(
 
     override fun fillAudioFrame(buffer: ByteBuffer): Long {
         val record = requireNotNull(audioRecord) { "Entrada de áudio não preparada" }
-        val length = record.read(buffer, buffer.remaining())
+        val maxBytes = buffer.remaining().coerceAtMost(configuredBufferSize.coerceAtLeast(1))
+        val scratch = ByteArray(maxBytes)
+        val length = record.read(scratch, 0, scratch.size)
         if (length <= 0) throw IllegalStateException("Falha ao capturar áudio: $length")
+
+        buffer.put(scratch, 0, length)
+        AudioLevelMonitor.updateFromPcm16(scratch, length)
         return System.nanoTime() / 1_000L
     }
 
