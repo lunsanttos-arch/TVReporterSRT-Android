@@ -3,6 +3,8 @@ package br.tvreporter.srt
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioDeviceInfo
@@ -13,13 +15,18 @@ import android.os.Bundle
 import android.util.Size
 import android.view.View
 import android.view.WindowManager
-import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.Spinner
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import br.tvreporter.srt.databinding.ActivityMainBinding
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.extensions.defaultCameraId
 import io.github.thibaultbee.streampack.core.interfaces.releaseBlocking
@@ -34,11 +41,11 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var streamer: SingleStreamer
+    private lateinit var audioPreviewMonitor: AudioPreviewMonitor
 
     private var isStreaming = false
-    private var isMuted = false
     private var isPrepared = false
-    private var suppressDeviceCallbacks = false
+    private var isMuted = false
 
     private data class CameraChoice(val id: String, val label: String)
     private data class MicrophoneChoice(val id: Int?, val label: String)
@@ -57,8 +64,8 @@ class MainActivity : AppCompatActivity() {
             if (cameraGranted && micGranted) {
                 prepareStreamer()
             } else {
-                showToast("Câmera e microfone são necessários para transmitir.")
                 setStatus("SEM PERMISSÃO")
+                showToast("Câmera e microfone são necessários para transmitir.")
             }
         }
 
@@ -69,91 +76,175 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         streamer = SingleStreamer(applicationContext)
+        audioPreviewMonitor = AudioPreviewMonitor(applicationContext)
+        isMuted = getSharedPreferences("stream", MODE_PRIVATE).getBoolean("muted", false)
 
-        setupControls()
-        restoreSettings()
         refreshDeviceLists()
+        setupControls()
+        observeAudioLevel()
         requestPermissionsIfNeeded()
     }
 
     private fun setupControls() {
-        binding.bitrateSpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            bitrateOptions.map { "$it Mbps" }
-        )
-        binding.latencySpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            latencyOptions.map { "$it ms" }
-        )
-        binding.fpsSpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            fpsOptions.map { "$it fps" }
-        )
-
-        binding.bitrateSpinner.setSelection(bitrateOptions.indexOf(4))
-        binding.latencySpinner.setSelection(latencyOptions.indexOf(200))
-        binding.fpsSpinner.setSelection(fpsOptions.indexOf(30))
-
-        binding.cameraSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (suppressDeviceCallbacks || !isPrepared || isStreaming) return
-                lifecycleScope.launch {
-                    runCatching { applySelectedCamera() }
-                        .onSuccess { saveSettings() }
-                        .onFailure { showToast("Erro ao selecionar câmera: ${it.message}") }
-                }
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-
-        binding.microphoneSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (suppressDeviceCallbacks || !isPrepared || isStreaming) return
-                lifecycleScope.launch {
-                    runCatching { applySelectedMicrophone() }
-                        .onSuccess { saveSettings() }
-                        .onFailure { showToast("Erro ao selecionar microfone: ${it.message}") }
-                }
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-
-        binding.refreshDevicesButton.setOnClickListener {
-            if (!isStreaming) {
-                refreshDeviceLists()
-                if (isPrepared) {
-                    lifecycleScope.launch {
-                        runCatching { applySelectedDevices() }
-                            .onFailure { showToast("Erro ao atualizar dispositivos: ${it.message}") }
-                    }
-                }
-            }
-        }
-
+        binding.settingsButton.setOnClickListener { showSettingsDialog() }
         binding.liveButton.setOnClickListener {
             if (isStreaming) stopLive() else startLive()
         }
+        setStatus("OFFLINE")
+    }
 
-        binding.muteButton.setOnClickListener {
-            isMuted = !isMuted
-            streamer.audioInput.isMuted = isMuted
-            binding.muteButton.text = if (isMuted) "Ativar áudio" else "Mute"
+    private fun observeAudioLevel() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                AudioLevelMonitor.level.collect { level ->
+                    binding.audioLevelMeter.setLevel(level)
+                }
+            }
         }
     }
 
-    private fun refreshDeviceLists() {
-        suppressDeviceCallbacks = true
-        try {
-            refreshCameraList()
-            refreshMicrophoneList()
-        } finally {
-            suppressDeviceCallbacks = false
+    private fun requestPermissionsIfNeeded() {
+        if (hasCameraPermission() && hasMicPermission()) {
+            prepareStreamer()
+        } else {
+            permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
         }
+    }
+
+    private fun prepareStreamer() {
+        lifecycleScope.launch {
+            try {
+                streamer.setAudioConfig(
+                    AudioConfig(
+                        mimeType = MediaFormat.MIMETYPE_AUDIO_AAC,
+                        startBitrate = 128_000,
+                        sampleRate = 48_000,
+                        channelConfig = AudioFormat.CHANNEL_IN_MONO
+                    )
+                )
+                applySelectedCamera()
+                applyVideoConfig()
+                binding.preview.setVideoSourceProvider(streamer)
+                isPrepared = true
+                startAudioPreview()
+                setStatus("OFFLINE")
+            } catch (t: Throwable) {
+                setStatus("ERRO")
+                showToast("Erro ao preparar câmera/áudio: ${t.message}")
+            }
+        }
+    }
+
+    private fun showSettingsDialog() {
+        if (isStreaming) {
+            showToast("Saia do ar antes de alterar as configurações.")
+            return
+        }
+
+        refreshDeviceLists()
+        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
+        val view = layoutInflater.inflate(R.layout.dialog_settings, null)
+
+        val hostEdit = view.findViewById<EditText>(R.id.hostEdit)
+        val portEdit = view.findViewById<EditText>(R.id.portEdit)
+        val streamIdEdit = view.findViewById<EditText>(R.id.streamIdEdit)
+        val passphraseEdit = view.findViewById<EditText>(R.id.passphraseEdit)
+        val cameraSpinner = view.findViewById<Spinner>(R.id.cameraSpinner)
+        val microphoneSpinner = view.findViewById<Spinner>(R.id.microphoneSpinner)
+        val bitrateSpinner = view.findViewById<Spinner>(R.id.bitrateSpinner)
+        val latencySpinner = view.findViewById<Spinner>(R.id.latencySpinner)
+        val fpsSpinner = view.findViewById<Spinner>(R.id.fpsSpinner)
+        val muteCheckBox = view.findViewById<CheckBox>(R.id.muteCheckBox)
+        val refreshButton = view.findViewById<View>(R.id.refreshDevicesButton)
+
+        hostEdit.setText(prefs.getString("host", "192.168.20.53"))
+        portEdit.setText(prefs.getString("port", "6767"))
+        streamIdEdit.setText(prefs.getString("streamId", ""))
+        passphraseEdit.setText(prefs.getString("passphrase", ""))
+        muteCheckBox.isChecked = prefs.getBoolean("muted", false)
+
+        bitrateSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, bitrateOptions.map { "$it Mbps" })
+        latencySpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, latencyOptions.map { "$it ms" })
+        fpsSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, fpsOptions.map { "$it fps" })
+        bitrateSpinner.setSelection(prefs.getInt("bitrate", bitrateOptions.indexOf(4)).coerceIn(0, bitrateOptions.lastIndex))
+        latencySpinner.setSelection(prefs.getInt("latency", latencyOptions.indexOf(200)).coerceIn(0, latencyOptions.lastIndex))
+        fpsSpinner.setSelection(prefs.getInt("fps", fpsOptions.indexOf(30)).coerceIn(0, fpsOptions.lastIndex))
+
+        fun populateDevices() {
+            val currentCamera = cameraSpinner.selectedItemPosition.takeIf { it >= 0 }
+                ?.let { cameraChoices.getOrNull(it)?.id }
+                ?: prefs.getString("cameraId", null)
+            val currentMic = microphoneSpinner.selectedItemPosition.takeIf { it >= 0 }
+                ?.let { microphoneChoices.getOrNull(it)?.id }
+                ?: if (prefs.contains("microphoneId")) prefs.getInt("microphoneId", -1) else null
+
+            cameraSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, cameraChoices.map { it.label })
+            microphoneSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, microphoneChoices.map { it.label })
+
+            val cameraIndex = cameraChoices.indexOfFirst { it.id == currentCamera }.takeIf { it >= 0 } ?: defaultCameraIndex()
+            val micIndex = microphoneChoices.indexOfFirst { it.id == currentMic }.takeIf { it >= 0 } ?: 0
+            if (cameraChoices.isNotEmpty()) cameraSpinner.setSelection(cameraIndex)
+            if (microphoneChoices.isNotEmpty()) microphoneSpinner.setSelection(micIndex)
+        }
+
+        populateDevices()
+        refreshButton.setOnClickListener {
+            refreshDeviceLists()
+            populateDevices()
+            showToast("Dispositivos atualizados.")
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Configurações")
+            .setView(view)
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Salvar", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val host = hostEdit.text.toString().trim()
+                val port = portEdit.text.toString().toIntOrNull()
+                if (host.isBlank() || port == null || port !in 1..65535) {
+                    showToast("Host ou porta inválidos.")
+                    return@setOnClickListener
+                }
+
+                val cameraId = cameraChoices.getOrNull(cameraSpinner.selectedItemPosition)?.id
+                val microphoneId = microphoneChoices.getOrNull(microphoneSpinner.selectedItemPosition)?.id
+
+                prefs.edit()
+                    .putString("host", host)
+                    .putString("port", port.toString())
+                    .putString("streamId", streamIdEdit.text.toString().trim())
+                    .putString("passphrase", passphraseEdit.text.toString())
+                    .putString("cameraId", cameraId)
+                    .apply {
+                        if (microphoneId == null) remove("microphoneId") else putInt("microphoneId", microphoneId)
+                    }
+                    .putInt("bitrate", bitrateSpinner.selectedItemPosition)
+                    .putInt("latency", latencySpinner.selectedItemPosition)
+                    .putInt("fps", fpsSpinner.selectedItemPosition)
+                    .putBoolean("muted", muteCheckBox.isChecked)
+                    .apply()
+
+                isMuted = muteCheckBox.isChecked
+                lifecycleScope.launch {
+                    runCatching {
+                        applySelectedCamera()
+                        applyVideoConfig()
+                        restartAudioPreview()
+                    }.onFailure { showToast("Erro ao aplicar configuração: ${it.message}") }
+                }
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun refreshDeviceLists() {
+        refreshCameraList()
+        refreshMicrophoneList()
     }
 
     private fun refreshCameraList() {
@@ -176,43 +267,14 @@ class MainActivity : AppCompatActivity() {
             }
             CameraChoice(id, label)
         }
-
-        binding.cameraSpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            cameraChoices.map { it.label }
-        )
-
-        val savedId = getSharedPreferences("stream", MODE_PRIVATE).getString("cameraId", null)
-        val defaultId = runCatching { defaultCameraId }.getOrNull()
-        val selectedIndex = cameraChoices.indexOfFirst { it.id == savedId }
-            .takeIf { it >= 0 }
-            ?: cameraChoices.indexOfFirst { it.id == defaultId }.takeIf { it >= 0 }
-            ?: 0
-        if (cameraChoices.isNotEmpty()) binding.cameraSpinner.setSelection(selectedIndex)
     }
 
     private fun refreshMicrophoneList() {
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-
-        microphoneChoices = listOf(MicrophoneChoice(null, "Automático do Android")) +
-            devices.map { device ->
-                MicrophoneChoice(device.id, microphoneLabel(device))
-            }
-
-        binding.microphoneSpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            microphoneChoices.map { it.label }
-        )
-
-        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
-        val savedId = if (prefs.contains("microphoneId")) prefs.getInt("microphoneId", -1) else -1
-        val selectedIndex = microphoneChoices.indexOfFirst { it.id == savedId }
-            .takeIf { it >= 0 }
-            ?: 0
-        binding.microphoneSpinner.setSelection(selectedIndex)
+        microphoneChoices = listOf(MicrophoneChoice(null, "Automático do Android")) + devices.map { device ->
+            MicrophoneChoice(device.id, microphoneLabel(device))
+        }
     }
 
     private fun microphoneLabel(device: AudioDeviceInfo): String {
@@ -227,75 +289,58 @@ class MainActivity : AppCompatActivity() {
             else -> "Entrada de áudio"
         }
         val product = device.productName?.toString()?.takeIf { it.isNotBlank() }
-        return if (product != null && !product.equals(type, ignoreCase = true)) {
-            "$type • $product"
-        } else {
-            type
-        }
+        return if (product != null && !product.equals(type, ignoreCase = true)) "$type • $product" else type
     }
 
-    private fun requestPermissionsIfNeeded() {
-        if (hasCameraPermission() && hasMicPermission()) {
-            prepareStreamer()
-        } else {
-            permissionLauncher.launch(
-                arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
-            )
-        }
+    private fun defaultCameraIndex(): Int {
+        val defaultId = runCatching { defaultCameraId }.getOrNull()
+        return cameraChoices.indexOfFirst { it.id == defaultId }.takeIf { it >= 0 } ?: 0
     }
 
-    private fun prepareStreamer() {
-        lifecycleScope.launch {
-            try {
-                streamer.setAudioConfig(
-                    AudioConfig(
-                        mimeType = MediaFormat.MIMETYPE_AUDIO_AAC,
-                        startBitrate = 128_000,
-                        sampleRate = 48_000,
-                        channelConfig = AudioFormat.CHANNEL_IN_MONO
-                    )
-                )
-                applySelectedDevices()
-                applyVideoConfig()
-                binding.preview.setVideoSourceProvider(streamer)
-                isPrepared = true
-                setStatus("PRONTO")
-            } catch (t: Throwable) {
-                setStatus("ERRO")
-                showToast("Erro ao preparar câmera/áudio: ${t.message}")
-            }
-        }
+    private fun selectedCameraId(): String {
+        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
+        val saved = prefs.getString("cameraId", null)
+        return cameraChoices.firstOrNull { it.id == saved }?.id
+            ?: cameraChoices.getOrNull(defaultCameraIndex())?.id
+            ?: throw IllegalStateException("Nenhuma câmera disponível")
     }
 
-    private suspend fun applySelectedDevices() {
-        applySelectedMicrophone()
-        applySelectedCamera()
+    private fun selectedMicrophoneId(): Int? {
+        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
+        val saved = if (prefs.contains("microphoneId")) prefs.getInt("microphoneId", -1) else null
+        return microphoneChoices.firstOrNull { it.id == saved }?.id
     }
 
     private suspend fun applySelectedCamera() {
-        val choice = cameraChoices.getOrNull(binding.cameraSpinner.selectedItemPosition)
-            ?: throw IllegalStateException("Nenhuma câmera disponível")
-        streamer.setCameraId(choice.id)
+        streamer.setCameraId(selectedCameraId())
     }
 
     private suspend fun applySelectedMicrophone() {
-        val choice = microphoneChoices.getOrNull(binding.microphoneSpinner.selectedItemPosition)
-            ?: MicrophoneChoice(null, "Automático do Android")
-        streamer.setAudioSource(PreferredMicrophoneSourceFactory(choice.id))
+        streamer.setAudioSource(PreferredMicrophoneSourceFactory(selectedMicrophoneId()))
         streamer.audioInput.isMuted = isMuted
     }
 
     private suspend fun applyVideoConfig() {
-        val bitrateMbps = bitrateOptions[binding.bitrateSpinner.selectedItemPosition]
-        val fps = fpsOptions[binding.fpsSpinner.selectedItemPosition]
+        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
+        val bitrateIndex = prefs.getInt("bitrate", bitrateOptions.indexOf(4)).coerceIn(0, bitrateOptions.lastIndex)
+        val fpsIndex = prefs.getInt("fps", fpsOptions.indexOf(30)).coerceIn(0, fpsOptions.lastIndex)
         streamer.setVideoConfig(
             VideoConfig(
                 mimeType = MediaFormat.MIMETYPE_VIDEO_AVC,
-                startBitrate = bitrateMbps * 1_000_000,
+                startBitrate = bitrateOptions[bitrateIndex] * 1_000_000,
                 resolution = Size(1920, 1080),
-                fps = fps
+                fps = fpsOptions[fpsIndex]
             )
         )
+    }
+
+    private fun startAudioPreview() {
+        if (!isStreaming && hasMicPermission()) audioPreviewMonitor.start(selectedMicrophoneId())
+    }
+
+    private fun restartAudioPreview() {
+        audioPreviewMonitor.stop()
+        startAudioPreview()
     }
 
     private fun startLive() {
@@ -303,41 +348,47 @@ class MainActivity : AppCompatActivity() {
             requestPermissionsIfNeeded()
             return
         }
-
-        val host = binding.hostEdit.text.toString().trim()
-        val port = binding.portEdit.text.toString().toIntOrNull()
-        if (host.isBlank() || port == null || port !in 1..65535) {
-            showToast("Host ou porta inválidos.")
+        if (!isPrepared) {
+            prepareStreamer()
             return
         }
 
-        val latency = latencyOptions[binding.latencySpinner.selectedItemPosition]
-        val streamId = binding.streamIdEdit.text.toString().trim().ifBlank { null }
-        val passphrase = binding.passphraseEdit.text.toString().ifBlank { null }
+        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
+        val host = prefs.getString("host", "192.168.20.53")?.trim().orEmpty()
+        val port = prefs.getString("port", "6767")?.toIntOrNull()
+        if (host.isBlank() || port == null || port !in 1..65535) {
+            showToast("Abra as configurações e informe um host/porta válidos.")
+            return
+        }
 
-        saveSettings()
+        val latencyIndex = prefs.getInt("latency", latencyOptions.indexOf(200)).coerceIn(0, latencyOptions.lastIndex)
+        val streamId = prefs.getString("streamId", "")?.trim()?.ifBlank { null }
+        val passphrase = prefs.getString("passphrase", "")?.ifBlank { null }
+        isMuted = prefs.getBoolean("muted", false)
+
         setStatus("CONECTANDO")
         binding.liveButton.isEnabled = false
+        audioPreviewMonitor.stop()
 
         lifecycleScope.launch {
             try {
-                applySelectedDevices()
+                applySelectedCamera()
+                applySelectedMicrophone()
                 applyVideoConfig()
                 val descriptor = SrtMediaDescriptor(
                     host = host,
                     port = port,
                     streamId = streamId,
                     passPhrase = passphrase,
-                    latency = latency
+                    latency = latencyOptions[latencyIndex]
                 )
                 streamer.startStream(descriptor)
                 isStreaming = true
-                setStatus("NO AR")
-                binding.liveButton.text = "SAIR DO AR"
-                lockStreamingSettings(true)
+                setStatus("AO VIVO")
             } catch (t: Throwable) {
                 isStreaming = false
                 setStatus("ERRO")
+                startAudioPreview()
                 showToast("Falha SRT/dispositivo: ${t.message}")
             } finally {
                 binding.liveButton.isEnabled = true
@@ -353,29 +404,22 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Throwable) {
             } finally {
                 isStreaming = false
-                setStatus("PRONTO")
-                binding.liveButton.text = "ENTRAR AO VIVO"
+                setStatus("OFFLINE")
                 binding.liveButton.isEnabled = true
-                lockStreamingSettings(false)
+                startAudioPreview()
             }
         }
     }
 
-    private fun lockStreamingSettings(locked: Boolean) {
-        binding.hostEdit.isEnabled = !locked
-        binding.portEdit.isEnabled = !locked
-        binding.streamIdEdit.isEnabled = !locked
-        binding.passphraseEdit.isEnabled = !locked
-        binding.cameraSpinner.isEnabled = !locked
-        binding.microphoneSpinner.isEnabled = !locked
-        binding.refreshDevicesButton.isEnabled = !locked
-        binding.bitrateSpinner.isEnabled = !locked
-        binding.latencySpinner.isEnabled = !locked
-        binding.fpsSpinner.isEnabled = !locked
-    }
-
     private fun setStatus(text: String) {
         binding.statusText.text = text
+        val color = when (text) {
+            "AO VIVO" -> Color.rgb(244, 67, 54)
+            "CONECTANDO" -> Color.rgb(255, 152, 0)
+            "ERRO", "SEM PERMISSÃO" -> Color.rgb(183, 28, 28)
+            else -> Color.rgb(110, 35, 35)
+        }
+        binding.liveButton.backgroundTintList = ColorStateList.valueOf(color)
     }
 
     private fun hasCameraPermission(): Boolean =
@@ -384,41 +428,12 @@ class MainActivity : AppCompatActivity() {
     private fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    private fun saveSettings() {
-        val cameraId = cameraChoices.getOrNull(binding.cameraSpinner.selectedItemPosition)?.id
-        val microphoneId = microphoneChoices.getOrNull(binding.microphoneSpinner.selectedItemPosition)?.id
-
-        getSharedPreferences("stream", MODE_PRIVATE).edit()
-            .putString("host", binding.hostEdit.text.toString())
-            .putString("port", binding.portEdit.text.toString())
-            .putString("streamId", binding.streamIdEdit.text.toString())
-            .putString("passphrase", binding.passphraseEdit.text.toString())
-            .putString("cameraId", cameraId)
-            .apply {
-                if (microphoneId == null) remove("microphoneId") else putInt("microphoneId", microphoneId)
-            }
-            .putInt("bitrate", binding.bitrateSpinner.selectedItemPosition)
-            .putInt("latency", binding.latencySpinner.selectedItemPosition)
-            .putInt("fps", binding.fpsSpinner.selectedItemPosition)
-            .apply()
-    }
-
-    private fun restoreSettings() {
-        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
-        binding.hostEdit.setText(prefs.getString("host", "192.168.20.53"))
-        binding.portEdit.setText(prefs.getString("port", "6767"))
-        binding.streamIdEdit.setText(prefs.getString("streamId", ""))
-        binding.passphraseEdit.setText(prefs.getString("passphrase", ""))
-        binding.bitrateSpinner.setSelection(prefs.getInt("bitrate", bitrateOptions.indexOf(4)))
-        binding.latencySpinner.setSelection(prefs.getInt("latency", latencyOptions.indexOf(200)))
-        binding.fpsSpinner.setSelection(prefs.getInt("fps", fpsOptions.indexOf(30)))
-    }
-
     private fun showToast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     override fun onDestroy() {
+        audioPreviewMonitor.stop()
         try {
             streamer.releaseBlocking()
         } catch (_: Throwable) {
