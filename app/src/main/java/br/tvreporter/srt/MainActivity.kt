@@ -41,7 +41,6 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var streamer: SingleStreamer
-    private lateinit var audioPreviewMonitor: AudioPreviewMonitor
 
     private var isStreaming = false
     private var isPrepared = false
@@ -76,7 +75,6 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         streamer = SingleStreamer(applicationContext)
-        audioPreviewMonitor = AudioPreviewMonitor(applicationContext)
         isMuted = getSharedPreferences("stream", MODE_PRIVATE).getBoolean("muted", false)
 
         refreshDeviceLists()
@@ -122,11 +120,10 @@ class MainActivity : AppCompatActivity() {
                         channelConfig = AudioFormat.CHANNEL_IN_MONO
                     )
                 )
-                applySelectedCamera()
+                applySelectedDevices()
                 applyVideoConfig()
                 binding.preview.setVideoSourceProvider(streamer)
                 isPrepared = true
-                startAudioPreview()
                 setStatus("OFFLINE")
             } catch (t: Throwable) {
                 setStatus("ERRO")
@@ -231,9 +228,8 @@ class MainActivity : AppCompatActivity() {
                 isMuted = muteCheckBox.isChecked
                 lifecycleScope.launch {
                     runCatching {
-                        applySelectedCamera()
+                        applySelectedDevices()
                         applyVideoConfig()
-                        restartAudioPreview()
                     }.onFailure { showToast("Erro ao aplicar configuração: ${it.message}") }
                 }
                 dialog.dismiss()
@@ -311,6 +307,11 @@ class MainActivity : AppCompatActivity() {
         return microphoneChoices.firstOrNull { it.id == saved }?.id
     }
 
+    private suspend fun applySelectedDevices() {
+        applySelectedMicrophone()
+        applySelectedCamera()
+    }
+
     private suspend fun applySelectedCamera() {
         streamer.setCameraId(selectedCameraId())
     }
@@ -332,15 +333,6 @@ class MainActivity : AppCompatActivity() {
                 fps = fpsOptions[fpsIndex]
             )
         )
-    }
-
-    private fun startAudioPreview() {
-        if (!isStreaming && hasMicPermission()) audioPreviewMonitor.start(selectedMicrophoneId())
-    }
-
-    private fun restartAudioPreview() {
-        audioPreviewMonitor.stop()
-        startAudioPreview()
     }
 
     private fun startLive() {
@@ -368,12 +360,10 @@ class MainActivity : AppCompatActivity() {
 
         setStatus("CONECTANDO")
         binding.liveButton.isEnabled = false
-        audioPreviewMonitor.stop()
 
         lifecycleScope.launch {
             try {
-                applySelectedCamera()
-                applySelectedMicrophone()
+                applySelectedDevices()
                 applyVideoConfig()
                 val descriptor = SrtMediaDescriptor(
                     host = host,
@@ -388,7 +378,6 @@ class MainActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 isStreaming = false
                 setStatus("ERRO")
-                startAudioPreview()
                 showToast("Falha SRT/dispositivo: ${t.message}")
             } finally {
                 binding.liveButton.isEnabled = true
@@ -404,9 +393,9 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Throwable) {
             } finally {
                 isStreaming = false
+                AudioLevelMonitor.clear()
                 setStatus("OFFLINE")
                 binding.liveButton.isEnabled = true
-                startAudioPreview()
             }
         }
     }
@@ -433,7 +422,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        audioPreviewMonitor.stop()
         try {
             streamer.releaseBlocking()
         } catch (_: Throwable) {
