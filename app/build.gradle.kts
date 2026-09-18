@@ -38,6 +38,7 @@ dependencies {
     implementation(libs.streampack.core)
     implementation(libs.streampack.ui)
     implementation(libs.streampack.srt)
+    implementation(libs.libvlc)
 
     implementation(libs.core.ktx)
     implementation(libs.appcompat)
