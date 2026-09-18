@@ -7,6 +7,7 @@ kotlin = "2.4.10"
 lifecycleRuntimeKtx = "2.11.0"
 material = "1.14.0"
 streampack = "3.2.0"
+libvlc = "3.7.6"
 
 [libraries]
 appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
@@ -17,6 +18,7 @@ material = { module = "com.google.android.material:material", version.ref = "mat
 streampack-core = { group = "io.github.thibaultbee.streampack", name = "streampack-core", version.ref = "streampack" }
 streampack-ui = { group = "io.github.thibaultbee.streampack", name = "streampack-ui", version.ref = "streampack" }
 streampack-srt = { group = "io.github.thibaultbee.streampack", name = "streampack-srt", version.ref = "streampack" }
+libvlc = { group = "org.videolan.android", name = "libvlc-all", version.ref = "libvlc" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
