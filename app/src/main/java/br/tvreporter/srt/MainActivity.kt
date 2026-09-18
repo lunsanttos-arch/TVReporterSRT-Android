@@ -13,6 +13,7 @@ import android.media.AudioManager
 import android.media.MediaFormat
 import android.os.Bundle
 import android.util.Size
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ArrayAdapter
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var streamer: SingleStreamer
+    private lateinit var returnPlayer: ReturnSrtPlayer
 
     private var isStreaming = false
     private var isPrepared = false
@@ -75,11 +77,25 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         streamer = SingleStreamer(applicationContext)
+        returnPlayer = ReturnSrtPlayer(applicationContext, binding.returnVideo) { state ->
+            runOnUiThread {
+                binding.returnStatusText.text = state
+                binding.returnStatusText.setTextColor(
+                    when (state) {
+                        "RETORNO OK" -> Color.rgb(129, 199, 132)
+                        "ERRO", "SEM SINAL" -> Color.rgb(239, 83, 80)
+                        else -> Color.rgb(255, 204, 128)
+                    }
+                )
+            }
+        }
         isMuted = getSharedPreferences("stream", MODE_PRIVATE).getBoolean("muted", false)
 
         refreshDeviceLists()
         setupControls()
+        setupReturnDrag()
         observeAudioLevel()
+        startReturnIfEnabled()
         requestPermissionsIfNeeded()
     }
 
@@ -152,6 +168,9 @@ class MainActivity : AppCompatActivity() {
         val latencySpinner = view.findViewById<Spinner>(R.id.latencySpinner)
         val fpsSpinner = view.findViewById<Spinner>(R.id.fpsSpinner)
         val muteCheckBox = view.findViewById<CheckBox>(R.id.muteCheckBox)
+        val returnEnabledCheckBox = view.findViewById<CheckBox>(R.id.returnEnabledCheckBox)
+        val returnHostEdit = view.findViewById<EditText>(R.id.returnHostEdit)
+        val returnPortEdit = view.findViewById<EditText>(R.id.returnPortEdit)
         val refreshButton = view.findViewById<View>(R.id.refreshDevicesButton)
 
         hostEdit.setText(prefs.getString("host", "192.168.20.53"))
@@ -159,6 +178,9 @@ class MainActivity : AppCompatActivity() {
         streamIdEdit.setText(prefs.getString("streamId", ""))
         passphraseEdit.setText(prefs.getString("passphrase", ""))
         muteCheckBox.isChecked = prefs.getBoolean("muted", false)
+        returnEnabledCheckBox.isChecked = prefs.getBoolean("returnEnabled", false)
+        returnHostEdit.setText(prefs.getString("returnHost", "192.168.20.53"))
+        returnPortEdit.setText(prefs.getString("returnPort", "6777"))
 
         bitrateSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, bitrateOptions.map { "$it Mbps" })
         latencySpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, latencyOptions.map { "$it ms" })
@@ -207,6 +229,14 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
 
+                val returnEnabled = returnEnabledCheckBox.isChecked
+                val returnHost = returnHostEdit.text.toString().trim()
+                val returnPort = returnPortEdit.text.toString().toIntOrNull()
+                if (returnEnabled && (returnHost.isBlank() || returnPort == null || returnPort !in 1..65535)) {
+                    showToast("IP ou porta do retorno inválidos.")
+                    return@setOnClickListener
+                }
+
                 val cameraId = cameraChoices.getOrNull(cameraSpinner.selectedItemPosition)?.id
                 val microphoneId = microphoneChoices.getOrNull(microphoneSpinner.selectedItemPosition)?.id
 
@@ -223,6 +253,9 @@ class MainActivity : AppCompatActivity() {
                     .putInt("latency", latencySpinner.selectedItemPosition)
                     .putInt("fps", fpsSpinner.selectedItemPosition)
                     .putBoolean("muted", muteCheckBox.isChecked)
+                    .putBoolean("returnEnabled", returnEnabled)
+                    .putString("returnHost", returnHost)
+                    .putString("returnPort", returnPort?.toString() ?: "")
                     .apply()
 
                 isMuted = muteCheckBox.isChecked
@@ -232,10 +265,69 @@ class MainActivity : AppCompatActivity() {
                         applyVideoConfig()
                     }.onFailure { showToast("Erro ao aplicar configuração: ${it.message}") }
                 }
+                restartReturn()
                 dialog.dismiss()
             }
         }
         dialog.show()
+    }
+
+    private fun startReturnIfEnabled() {
+        val prefs = getSharedPreferences("stream", MODE_PRIVATE)
+        val enabled = prefs.getBoolean("returnEnabled", false)
+        if (!enabled) {
+            returnPlayer.stop()
+            binding.returnPanel.visibility = View.GONE
+            return
+        }
+
+        val host = prefs.getString("returnHost", "192.168.20.53")?.trim().orEmpty()
+        val port = prefs.getString("returnPort", "6777")?.toIntOrNull()
+        if (host.isBlank() || port == null || port !in 1..65535) {
+            binding.returnPanel.visibility = View.GONE
+            return
+        }
+
+        binding.returnPanel.visibility = View.VISIBLE
+        returnPlayer.play(host, port)
+    }
+
+    private fun restartReturn() {
+        returnPlayer.stop()
+        startReturnIfEnabled()
+    }
+
+    private fun setupReturnDrag() {
+        var downX = 0f
+        var downY = 0f
+        var startX = 0f
+        var startY = 0f
+
+        binding.returnDragHandle.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    startX = binding.returnPanel.translationX
+                    startY = binding.returnPanel.translationY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val maxX = (binding.root.width - binding.returnPanel.width).coerceAtLeast(0).toFloat()
+                    val maxY = (binding.root.height - binding.returnPanel.height).coerceAtLeast(0).toFloat()
+                    binding.returnPanel.translationX =
+                        (startX + event.rawX - downX).coerceIn(0f, maxX)
+                    binding.returnPanel.translationY =
+                        (startY + event.rawY - downY).coerceIn(0f, maxY)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    view.performClick()
+                    true
+                }
+                else -> false
+            }
+        }
     }
 
     private fun refreshDeviceLists() {
@@ -422,6 +514,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        returnPlayer.release()
         try {
             streamer.releaseBlocking()
         } catch (_: Throwable) {
