@@ -44,8 +44,8 @@ class ReturnSrtPlayer(
         stop()
 
         val media = Media(libVlc, Uri.parse("srt://\$host:\$port"))
-        media.addOption(":network-caching=120")
-        media.addOption(":live-caching=120")
+        media.addOption(":network-caching=200")
+        media.addOption(":live-caching=200")
         media.addOption(":drop-late-frames")
         media.addOption(":skip-frames")
         player.media = media
