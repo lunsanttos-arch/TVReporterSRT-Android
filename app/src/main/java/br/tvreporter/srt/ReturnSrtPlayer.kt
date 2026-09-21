@@ -15,8 +15,8 @@ class ReturnSrtPlayer(
     private val libVlc = LibVLC(
         context,
         arrayListOf(
-            "--network-caching=120",
-            "--live-caching=120",
+            "--network-caching=200",
+            "--live-caching=200",
             "--clock-jitter=0",
             "--clock-synchro=0"
         )
